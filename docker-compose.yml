@@ -1,0 +1,47 @@
+services:
+  node1:
+    build: ./node
+    container_name: node1
+    environment:
+      - NODE_PORT=8000
+      - NODE_HOST=http://node1:8000
+      - KNOWN_PEERS=http://node2:8000
+    ports:
+      - "8001:8000"
+    networks:
+      - chainnet
+    volumes:
+      - node1_data:/data
+
+  node2:
+    build: ./node
+    container_name: node2
+    environment:
+      - NODE_PORT=8000
+      - NODE_HOST=http://node2:8000
+      - KNOWN_PEERS=http://node1:8000
+    ports:
+      - "8002:8000"
+    networks:
+      - chainnet
+    volumes:
+      - node2_data:/data
+
+  wallet:
+    build: ./wallet
+    container_name: wallet
+    stdin_open: true
+    tty: true
+    networks:
+      - chainnet
+    volumes:
+      - wallet_data:/root/.simplechain
+
+networks:
+  chainnet:
+    driver: bridge
+
+volumes:
+  node1_data:
+  node2_data:
+  wallet_data:
