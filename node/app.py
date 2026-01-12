@@ -1,14 +1,17 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.responses import JSONResponse
 import httpx
-from models import PeerAddReq, PeerList
-from settings import NODE_HOST, KNOWN_PEERS, STATE_FILE, WS_PATH
+import asyncio
+from models import PeerAddReq, PeerList, WsMsg, BlockModel, ChainHeight, BlockList
+from settings import MINING_INTERVAL, NODE_HOST, KNOWN_PEERS, STATE_FILE, WS_PATH, CHAIN_FILE, MINER
 from utils import PeerStore
 from p2p import P2P
+from chain import ChainStore, Block
 
 app = FastAPI(title="Stage1-Node")
 peers = PeerStore(STATE_FILE)
 p2p = P2P()
+chain = ChainStore()
 
 @app.on_event("startup")
 async def startup():
@@ -25,6 +28,8 @@ async def startup():
                             peers.add(tp)
             except Exception:
                 pass
+        if MINER:
+            asyncio.create_task(miner_loop())
 
 @app.get("/health")
 async def health():
@@ -50,6 +55,25 @@ async def ws_endpoint(ws: WebSocket):
     except WebSocketDisconnect:
         await p2p.unregister(ws)
 
+@app.get("/chain/height", response_model=ChainHeight)
+async def get_chain_height():
+    tip = chain.tip()
+    return ChainHeight(height=tip.height, tip=tip.hash)
+
+
+@app.get("/chain/block/{height}", response_model=BlockModel)
+async def get_block(height: int):
+    b = chain.get_block(height)
+    if not b:
+        raise HTTPException(status_code=404, detail="block not found")
+    return BlockModel(**b.to_dict())
+
+
+@app.get("/chain/range", response_model=BlockList)
+async def get_range(from_height: int = Query(0, ge=0)):
+    blocks = [BlockModel(**b.to_dict()) for b in chain.all_from(from_height)]
+    return BlockList(blocks=blocks)
+
 @app.post("/gossip")
 async def gossip(payload: dict):
 
@@ -58,3 +82,101 @@ async def gossip(payload: dict):
         "data": payload,
     })
     return {"ok": True, "relayed": payload}
+
+@app.post("/blocks/new")
+async def new_block(b: BlockModel):
+    block = Block.from_dict(b.dict())
+
+    if chain.has_hash(block.hash):
+        return {"status": "duplicate"}
+
+    local_height = chain.height()
+
+    if block.height == local_height + 1:
+        if not chain.validate_next(block):
+            raise HTTPException(status_code=400, detail="invalid block")
+        chain.append(block)
+        return {"status": "accepted"}
+
+    if block.height <= local_height:
+        return {"status": "stale"}
+
+    synced = await sync_from_peers()
+
+    if not synced:
+        raise HTTPException(status_code=400, detail="too_far_ahead")
+
+    local_height = chain.height()
+
+    if chain.has_hash(block.hash) or block.height <= local_height:
+        return {"status": "synced"}
+
+    if block.height == local_height + 1 and chain.tip().hash == block.prev_hash:
+        if not chain.validate_next(block):
+            raise HTTPException(status_code=400, detail="invalid block_after_sync")
+        chain.append(block)
+        return {"status": "accepted_after_sync"}
+
+    raise HTTPException(status_code=400, detail="cannot_connect_block")
+    
+async def miner_loop():
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        while True:
+            block = chain.make_next_block()
+            tip_before = chain.tip()
+            chain.append(block)
+            tip_after = chain.tip()
+            print(f"[MINER] new block height={tip_after.height}, prev={tip_before.height}, hash={block.hash[:8]}")
+
+            for p in peers.list():
+                try:
+                    await client.post(f"{p}/blocks/new", json=block.to_dict())
+                except Exception:
+                    pass
+
+            await asyncio.sleep(MINING_INTERVAL)
+
+async def sync_from_peers() -> bool:
+    local_h = chain.height()
+    best_peer = None
+    best_height = local_h
+
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for p in peers.list():
+            try:
+                r = await client.get(f"{p}/chain/height")
+                if r.status_code == 200:
+                    h = r.json().get("height", 0)
+                    if h > best_height:
+                        best_height = h
+                        best_peer = p
+            except Exception:
+                pass
+
+        if best_peer is None or best_height <= local_h:
+            return False
+
+        try:
+            r = await client.get(
+                f"{best_peer}/chain/range",
+                params={"from_height": local_h + 1},
+            )
+        except Exception:
+            return False
+
+        if r.status_code != 200:
+            return False
+
+        data = r.json()
+        blocks = data.get("blocks", [])
+
+        for b in blocks:
+            blk = Block.from_dict(b)
+            if chain.has_hash(blk.hash):
+                continue
+            if not chain.validate_next(blk):
+                break
+            chain.append(blk)
+
+        return chain.height() > local_h
+    

@@ -6,6 +6,7 @@ services:
       - NODE_PORT=8000
       - NODE_HOST=http://node1:8000
       - KNOWN_PEERS=http://node2:8000
+      - MINER=1
     ports:
       - "8001:8000"
     networks:
