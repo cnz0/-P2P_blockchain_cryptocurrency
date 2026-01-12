@@ -4,7 +4,7 @@ import hashlib
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import List, Optional
-from settings import CHAIN_FILE, NODE_HOST
+from settings import CHAIN_FILE, NODE_HOST, POW_DIFFICULTY
 
 @dataclass
 class Block:
@@ -119,20 +119,24 @@ class ChainStore:
         prev_hash = tip.hash
         timestamp = int(time.time())
         miner = NODE_HOST
+        txs = []
+        
+        prefix = "0" * POW_DIFFICULTY
         nonce = 0
-        h = Block.compute_hash(height, prev_hash, timestamp, miner, txs, nonce)
-        return Block(
-            height=height,
-            prev_hash=prev_hash,
-            timestamp=timestamp,
-            miner=miner,
-            txs=txs,
-            nonce=nonce,
-            hash=h,
-        )
+
+        while True:
+            h = Block.compute_hash(height, prev_hash, timestamp, miner, txs, nonce)
+            if h.startswith(prefix):
+                break
+            nonce += 1
+
+        return Block(height, prev_hash, timestamp, miner, txs, nonce, h)
     
     def validate_next(self, block: Block) -> bool:
         tip = self.tip()
+
+        if not block.hash.startswith("0" * POW_DIFFICULTY):
+            return False
 
         if block.height != tip.height + 1:
             return False
