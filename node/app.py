@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 import httpx
 import asyncio
 from models import PeerAddReq, PeerList, WsMsg, BlockModel, ChainHeight, BlockList
-from settings import MINING_INTERVAL, NODE_HOST, KNOWN_PEERS, STATE_FILE, WS_PATH, CHAIN_FILE, MINER
+from settings import MINING_INTERVAL, NODE_HOST, STATE_FILE, WS_PATH, CHAIN_FILE, MINER, TOPOLOGY, NODE_NAME
 from utils import PeerStore
 from p2p import P2P
 from chain import ChainStore, Block
@@ -15,8 +15,8 @@ chain = ChainStore()
 
 @app.on_event("startup")
 async def startup():
-    for p in KNOWN_PEERS:
-        peers.add(p)
+    for peer_name in TOPOLOGY.get(NODE_NAME, []):
+        peers.add(f"http://{peer_name}:8000")
     async with httpx.AsyncClient(timeout=5.0) as client:
         for p in peers.list():
             try:
@@ -87,20 +87,27 @@ async def gossip(payload: dict):
 async def new_block(b: BlockModel):
     block = Block.from_dict(b.dict())
 
+    # 1. Już mamy ten blok → ignorujemy
     if chain.has_hash(block.hash):
         return {"status": "duplicate"}
 
     local_height = chain.height()
 
+    # 2. Idealny przypadek: następny blok w łańcuchu
     if block.height == local_height + 1:
         if not chain.validate_next(block):
             raise HTTPException(status_code=400, detail="invalid block")
         chain.append(block)
+
+        # GOSSIP
+        await gossip_block(block)
         return {"status": "accepted"}
 
+    # 3. Stary blok
     if block.height <= local_height:
         return {"status": "stale"}
 
+    # 4. Jesteśmy w tyle → synchronizacja
     synced = await sync_from_peers()
 
     if not synced:
@@ -108,16 +115,29 @@ async def new_block(b: BlockModel):
 
     local_height = chain.height()
 
+    # 5. Po synchronizacji już mamy ten blok
     if chain.has_hash(block.hash) or block.height <= local_height:
         return {"status": "synced"}
 
+    # 6. Możemy go teraz podpiąć
     if block.height == local_height + 1 and chain.tip().hash == block.prev_hash:
         if not chain.validate_next(block):
             raise HTTPException(status_code=400, detail="invalid block_after_sync")
         chain.append(block)
+
+        # GOSSIP
+        await gossip_block(block)
         return {"status": "accepted_after_sync"}
 
     raise HTTPException(status_code=400, detail="cannot_connect_block")
+
+async def gossip_block(block):
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for p in peers.list():
+            try:
+                await client.post(f"{p}/blocks/new", json=block.to_dict())
+            except Exception:
+                pass
     
 async def miner_loop():
     async with httpx.AsyncClient(timeout=5.0) as client:

@@ -5,7 +5,7 @@ services:
     environment:
       - NODE_PORT=8000
       - NODE_HOST=http://node1:8000
-      - KNOWN_PEERS=http://node2:8000
+      - NODE_NAME=node1
       - MINER=1
     ports:
       - "8001:8000"
@@ -20,13 +20,27 @@ services:
     environment:
       - NODE_PORT=8000
       - NODE_HOST=http://node2:8000
-      - KNOWN_PEERS=http://node1:8000
+      - NODE_NAME=node2
     ports:
       - "8002:8000"
     networks:
       - chainnet
     volumes:
       - node2_data:/data
+
+  node3:
+    build: ./node
+    container_name: node3
+    environment:
+      - NODE_PORT=8000
+      - NODE_HOST=http://node3:8000
+      - NODE_NAME=node3
+    ports:
+      - "8003:8000"
+    networks:
+      - chainnet
+    volumes:
+      - node3_data:/data
 
   wallet:
     build: ./wallet
@@ -45,4 +59,5 @@ networks:
 volumes:
   node1_data:
   node2_data:
+  node3_data:
   wallet_data:
