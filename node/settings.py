@@ -8,6 +8,7 @@ TOPOLOGY = {
     "node2": ["node1", "node3"],
     "node3": ["node2"],
 }
+MINER_ADDRESS = os.getenv("MINER_ADDRESS")
 STATE_FILE = os.getenv("STATE_FILE", "/data/peers.json")
 WS_PATH = "/ws"
 CHAIN_FILE = os.getenv("CHAIN_FILE", "/data/chain.json")

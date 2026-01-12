@@ -2,11 +2,13 @@ import os, json, base64, click
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from crypto import gen_keypair, pubkey_bytes, address_from_pubkey, sign, verify
 from keystore import save_keystore, load_keystore, DEFAULT_PATH
+from tx import Transaction, TxIn, TxOut, compute_txid
+import requests
 
 
 @click.group()
 def cli():
-    """Wallet (Stage 1)"""
+    """Wallet (Stage 3)"""
 
 
 @cli.command()
@@ -51,6 +53,50 @@ def verifymessage(message, signature, path):
         click.echo("VALID")
     except Exception:
         click.echo("INVALID", err=True)
+
+@cli.command()
+@click.argument("to")
+@click.argument("amount", type=int)
+@click.option("--node", default="http://node1:8000")
+@click.option("--path", default=DEFAULT_PATH)
+@click.password_option(prompt=True)
+def send(to, amount, node, password, path):
+    # 1. Wczytaj klucze
+    sk, pub_b = load_keystore(password, path)
+    pk = ed25519.Ed25519PublicKey.from_public_bytes(pub_b)
+    from_addr = address_from_pubkey(pk)
+
+    # 2. Pobierz UTXO
+    r = requests.get(f"{node}/utxo", params={"address": from_addr})
+    utxos = r.json()["utxos"]
+
+    total = 0
+    inputs = []
+    for u in utxos:
+        inputs.append(TxIn(txid=u["txid"], index=u["index"]))
+        total += u["amount"]
+        if total >= amount:
+            break
+
+    if total < amount:
+        click.echo("Not enough funds", err=True)
+        return
+
+    # 3. Wyjścia: odbiorca + reszta
+    outputs = [TxOut(address=to, amount=amount)]
+    change = total - amount
+    if change > 0:
+        outputs.append(TxOut(address=from_addr, amount=change))
+
+    tx = Transaction(txid="", inputs=inputs, outputs=outputs)
+    tx.txid = compute_txid(tx)
+
+    # 4. Wyślij do noda
+    r = requests.post(f"{node}/tx/new", json=tx.to_dict())
+    if r.status_code == 200:
+        click.echo(f"Transaction sent. TXID={tx.txid}")
+    else:
+        click.echo(f"Error: {r.text}", err=True)
 
 
 if __name__ == "__main__":

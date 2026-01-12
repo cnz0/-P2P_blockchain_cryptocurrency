@@ -3,12 +3,13 @@ from fastapi.responses import JSONResponse
 import httpx
 import asyncio
 from models import PeerAddReq, PeerList, WsMsg, BlockModel, ChainHeight, BlockList
-from settings import MINING_INTERVAL, NODE_HOST, STATE_FILE, WS_PATH, CHAIN_FILE, MINER, TOPOLOGY, NODE_NAME
+from settings import MINING_INTERVAL, NODE_HOST, STATE_FILE, WS_PATH, MINER, TOPOLOGY, NODE_NAME
 from utils import PeerStore
 from p2p import P2P
 from chain import ChainStore, Block
+from tx import Transaction, TransactionModel
 
-app = FastAPI(title="Stage1-Node")
+app = FastAPI(title="Stage3-Node")
 peers = PeerStore(STATE_FILE)
 p2p = P2P()
 chain = ChainStore()
@@ -142,7 +143,12 @@ async def gossip_block(block):
 async def miner_loop():
     async with httpx.AsyncClient(timeout=5.0) as client:
         while True:
-            block = chain.make_next_block()
+            txs = chain.mempool.copy()
+            block = chain.make_next_block(txs=txs)
+
+            if chain.validate_next(block):
+                chain.append(block)
+                chain.mempool.clear()
             tip_before = chain.tip()
             chain.append(block)
             tip_after = chain.tip()
@@ -199,4 +205,53 @@ async def sync_from_peers() -> bool:
             chain.append(blk)
 
         return chain.height() > local_h
-    
+
+@app.post("/tx/new")
+async def new_tx(tx_data: dict):
+    tx = Transaction.from_dict(tx_data)
+
+    # 1. Sprawdzenie poprawności transakcji względem UTXO
+    if not chain.validate_tx(tx):
+        raise HTTPException(status_code=400, detail="invalid transaction")
+
+    # 2. Brak duplikatów w mempoolu
+    if any(t.txid == tx.txid for t in chain.mempool):
+        return {"status": "duplicate"}
+
+    # 3. Dodanie do mempoolu
+    chain.mempool.append(tx)
+
+    return {"status": "accepted"}
+
+@app.get("/balance")
+def balance(address: str):
+    return {
+        "address": address,
+        "balance": chain.balance_of(address)
+    }
+
+@app.get("/utxo")
+def get_utxo(address: str):
+    utxos = []
+    for (txid, idx), o in chain.utxo.items():
+        if o.address == address:
+            utxos.append({
+                "txid": txid,
+                "index": idx,
+                "amount": o.amount,
+                "address": o.address
+            })
+    return {"utxos": utxos}
+
+@app.post("/tx/new")
+def new_tx(tx: TransactionModel):
+    tx_obj = Transaction.from_dict(tx.dict())
+
+    # Walidacja
+    if not chain.validate_tx(tx_obj):
+        raise HTTPException(status_code=400, detail="invalid transaction")
+
+    # Dodaj do mempoola
+    chain.mempool.append(tx_obj)
+
+    return {"status": "accepted", "txid": tx_obj.txid}
