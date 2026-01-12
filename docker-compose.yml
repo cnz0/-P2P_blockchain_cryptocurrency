@@ -23,6 +23,7 @@ services:
       - NODE_PORT=8000
       - NODE_HOST=http://node2:8000
       - NODE_NAME=node2
+      - MINER=1
       - MINER_ADDRESS=UgLwGGXDzw2x9BWy7tDexk2MYNA5HSxu
       # Password = 1234 --path /root/.simplechain/user1.json
     ports:
@@ -39,6 +40,8 @@ services:
       - NODE_PORT=8000
       - NODE_HOST=http://node3:8000
       - NODE_NAME=node3
+      - MINER=0
+      - MALICIOUS=0
       - MINER_ADDRESS=LTJiPfAZZjRBLQic5QCvFQpqUKXTPu6M
       # Password = 1234 --path /root/.simplechain/user2.json
     ports:

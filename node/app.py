@@ -8,6 +8,7 @@ from utils import PeerStore
 from p2p import P2P
 from chain import ChainStore, Block
 from tx import Transaction, TransactionModel
+import random
 
 app = FastAPI(title="Stage3-Node")
 peers = PeerStore(STATE_FILE)
@@ -95,14 +96,13 @@ async def new_block(b: BlockModel):
     local_height = chain.height()
 
     # 2. Idealny przypadek: następny blok w łańcuchu
-    if block.height == local_height + 1:
-        if not chain.validate_next(block):
-            raise HTTPException(status_code=400, detail="invalid block")
-        chain.append(block)
+    if not chain.validate_block(block):
+        raise HTTPException(status_code=400, detail="invalid block")
 
-        # GOSSIP
-        await gossip_block(block)
-        return {"status": "accepted"}
+    chain.add_block(block)
+    # GOSSIP dalej (losowo)
+    await gossip_block(block)
+    return {"status": "accepted"}
 
     # 3. Stary blok
     if block.height <= local_height:
@@ -110,7 +110,6 @@ async def new_block(b: BlockModel):
 
     # 4. Jesteśmy w tyle → synchronizacja
     synced = await sync_from_peers()
-
     if not synced:
         raise HTTPException(status_code=400, detail="too_far_ahead")
 
@@ -122,45 +121,50 @@ async def new_block(b: BlockModel):
 
     # 6. Możemy go teraz podpiąć
     if block.height == local_height + 1 and chain.tip().hash == block.prev_hash:
-        if not chain.validate_next(block):
+        if not chain.validate_block(block):
             raise HTTPException(status_code=400, detail="invalid block_after_sync")
-        chain.append(block)
 
-        # GOSSIP
+        chain.add_block(block)
+
+        # GOSSIP dalej
         await gossip_block(block)
         return {"status": "accepted_after_sync"}
 
     raise HTTPException(status_code=400, detail="cannot_connect_block")
 
+GOSSIP_FANOUT = 2   # ilu peerów losowo wybieramy
+
 async def gossip_block(block):
+    peer_list = peers.list()
+    if not peer_list:
+        return
+
+    # losowo wybieramy kilku sąsiadów
+    k = min(GOSSIP_FANOUT, len(peer_list))
+    targets = random.sample(peer_list, k)
+
     async with httpx.AsyncClient(timeout=5.0) as client:
-        for p in peers.list():
+        for p in targets:
             try:
                 await client.post(f"{p}/blocks/new", json=block.to_dict())
             except Exception:
                 pass
     
 async def miner_loop():
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        while True:
-            txs = chain.mempool.copy()
-            block = chain.make_next_block(txs=txs)
+    while True:
+        txs = chain.mempool.copy()
+        block = chain.make_next_block(txs=txs)
 
-            if chain.validate_next(block):
-                chain.append(block)
-                chain.mempool.clear()
-            tip_before = chain.tip()
-            chain.append(block)
-            tip_after = chain.tip()
-            print(f"[MINER] new block height={tip_after.height}, prev={tip_before.height}, hash={block.hash[:8]}")
+        if chain.validate_block(block):
+            chain.add_block(block)
+            chain.mempool.clear()
 
-            for p in peers.list():
-                try:
-                    await client.post(f"{p}/blocks/new", json=block.to_dict())
-                except Exception:
-                    pass
+            print(f"[MINER] new block height={block.height}, hash={block.hash[:8]}")
 
-            await asyncio.sleep(MINING_INTERVAL)
+            # GOSSIP zamiast broadcastu
+            await gossip_block(block)
+
+        await asyncio.sleep(MINING_INTERVAL)
 
 async def sync_from_peers() -> bool:
     local_h = chain.height()
@@ -200,9 +204,9 @@ async def sync_from_peers() -> bool:
             blk = Block.from_dict(b)
             if chain.has_hash(blk.hash):
                 continue
-            if not chain.validate_next(blk):
+            if not chain.validate_block(blk):
                 break
-            chain.append(blk)
+            chain.add_block(blk)
 
         return chain.height() > local_h
 

@@ -15,3 +15,4 @@ CHAIN_FILE = os.getenv("CHAIN_FILE", "/data/chain.json")
 MINER = os.getenv("MINER", "0") == "1"
 MINING_INTERVAL = int(os.getenv("MINING_INTERVAL", "10"))
 POW_DIFFICULTY = int(os.getenv("POW_DIFFICULTY", "4"))
+MALICIOUS = os.getenv("MALICIOUS", "0") == "1"
