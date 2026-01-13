@@ -89,57 +89,19 @@ async def gossip(payload: dict):
 async def new_block(b: BlockModel):
     block = Block.from_dict(b.dict())
 
-    # 1. Już mamy ten blok → ignorujemy
-    if chain.has_hash(block.hash):
-        return {"status": "duplicate"}
+    if not chain.add_block(block):
+        return {"status": "rejected_or_orphan"}
 
-    local_height = chain.height()
-
-    # 2. Idealny przypadek: następny blok w łańcuchu
-    if not chain.validate_block(block):
-        raise HTTPException(status_code=400, detail="invalid block")
-
-    chain.add_block(block)
-    # GOSSIP dalej (losowo)
     await gossip_block(block)
     return {"status": "accepted"}
 
-    # 3. Stary blok
-    if block.height <= local_height:
-        return {"status": "stale"}
-
-    # 4. Jesteśmy w tyle → synchronizacja
-    synced = await sync_from_peers()
-    if not synced:
-        raise HTTPException(status_code=400, detail="too_far_ahead")
-
-    local_height = chain.height()
-
-    # 5. Po synchronizacji już mamy ten blok
-    if chain.has_hash(block.hash) or block.height <= local_height:
-        return {"status": "synced"}
-
-    # 6. Możemy go teraz podpiąć
-    if block.height == local_height + 1 and chain.tip().hash == block.prev_hash:
-        if not chain.validate_block(block):
-            raise HTTPException(status_code=400, detail="invalid block_after_sync")
-
-        chain.add_block(block)
-
-        # GOSSIP dalej
-        await gossip_block(block)
-        return {"status": "accepted_after_sync"}
-
-    raise HTTPException(status_code=400, detail="cannot_connect_block")
-
-GOSSIP_FANOUT = 2   # ilu peerów losowo wybieramy
+GOSSIP_FANOUT = 2
 
 async def gossip_block(block):
     peer_list = peers.list()
     if not peer_list:
         return
 
-    # losowo wybieramy kilku sąsiadów
     k = min(GOSSIP_FANOUT, len(peer_list))
     targets = random.sample(peer_list, k)
 
@@ -210,22 +172,18 @@ async def sync_from_peers() -> bool:
 
         return chain.height() > local_h
 
-@app.post("/tx/new")
-async def new_tx(tx_data: dict):
-    tx = Transaction.from_dict(tx_data)
+#@app.post("/tx/new")
+#async def new_tx(tx_data: dict):
+#    tx = Transaction.from_dict(tx_data)
 
-    # 1. Sprawdzenie poprawności transakcji względem UTXO
-    if not chain.validate_tx(tx):
-        raise HTTPException(status_code=400, detail="invalid transaction")
+#    if not chain.validate_tx(tx):
+#        raise HTTPException(status_code=400, detail="invalid transaction")
 
-    # 2. Brak duplikatów w mempoolu
-    if any(t.txid == tx.txid for t in chain.mempool):
-        return {"status": "duplicate"}
+#    if any(t.txid == tx.txid for t in chain.mempool):
+#        return {"status": "duplicate"}
+#    chain.mempool.append(tx)
 
-    # 3. Dodanie do mempoolu
-    chain.mempool.append(tx)
-
-    return {"status": "accepted"}
+#    return {"status": "accepted"}
 
 @app.get("/balance")
 def balance(address: str):
@@ -248,14 +206,26 @@ def get_utxo(address: str):
     return {"utxos": utxos}
 
 @app.post("/tx/new")
-def new_tx(tx: TransactionModel):
+async def new_tx(tx: TransactionModel):
     tx_obj = Transaction.from_dict(tx.dict())
 
-    # Walidacja
     if not chain.validate_tx(tx_obj):
         raise HTTPException(status_code=400, detail="invalid transaction")
 
-    # Dodaj do mempoola
     chain.mempool.append(tx_obj)
 
+    await gossip_tx(tx)
+
     return {"status": "accepted", "txid": tx_obj.txid}
+
+async def gossip_tx(tx):
+    peer_list = peers.list()
+    if not peer_list:
+        return
+
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for p in peer_list:
+            try:
+                await client.post(f"{p}/tx/new", json=tx.to_dict())
+            except Exception:
+                pass

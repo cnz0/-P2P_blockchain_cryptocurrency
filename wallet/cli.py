@@ -61,12 +61,10 @@ def verifymessage(message, signature, path):
 @click.option("--path", default=DEFAULT_PATH)
 @click.password_option(prompt=True)
 def send(to, amount, node, password, path):
-    # 1. Wczytaj klucze
     sk, pub_b = load_keystore(password, path)
     pk = ed25519.Ed25519PublicKey.from_public_bytes(pub_b)
     from_addr = address_from_pubkey(pk)
 
-    # 2. Pobierz UTXO
     r = requests.get(f"{node}/utxo", params={"address": from_addr})
     utxos = r.json()["utxos"]
 
@@ -82,7 +80,6 @@ def send(to, amount, node, password, path):
         click.echo("Not enough funds", err=True)
         return
 
-    # 3. Wyjścia: odbiorca + reszta
     outputs = [TxOut(address=to, amount=amount)]
     change = total - amount
     if change > 0:
@@ -91,7 +88,6 @@ def send(to, amount, node, password, path):
     tx = Transaction(txid="", inputs=inputs, outputs=outputs)
     tx.txid = compute_txid(tx)
 
-    # 4. Wyślij do noda
     r = requests.post(f"{node}/tx/new", json=tx.to_dict())
     if r.status_code == 200:
         click.echo(f"Transaction sent. TXID={tx.txid}")

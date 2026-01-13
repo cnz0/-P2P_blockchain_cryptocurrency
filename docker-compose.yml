@@ -7,8 +7,8 @@ services:
       - NODE_HOST=http://node1:8000
       - NODE_NAME=node1
       - MINER=1
-      - MINER_ADDRESS=jwZtUCadJT6649dmzbHTnRoNjth9HsPC
-      # Password = 1234 --path /root/.simplechain/miner1.json
+      - MINER_ADDRESS=2nNaxrGaBBAEBBnqsLYXWXB8wCjLqENN
+      # Password = 1234 --path /root/.simplechain/user1.json
     ports:
       - "8001:8000"
     networks:
@@ -24,8 +24,8 @@ services:
       - NODE_HOST=http://node2:8000
       - NODE_NAME=node2
       - MINER=1
-      - MINER_ADDRESS=UgLwGGXDzw2x9BWy7tDexk2MYNA5HSxu
-      # Password = 1234 --path /root/.simplechain/user1.json
+      - MINER_ADDRESS=2H1fmW3SFNkHcd6PdcmjjhoD9tPXrgAR
+      # Password = 1234 --path /root/.simplechain/user2.json
     ports:
       - "8002:8000"
     networks:
@@ -42,8 +42,8 @@ services:
       - NODE_NAME=node3
       - MINER=0
       - MALICIOUS=0
-      - MINER_ADDRESS=LTJiPfAZZjRBLQic5QCvFQpqUKXTPu6M
-      # Password = 1234 --path /root/.simplechain/user2.json
+      - MINER_ADDRESS=9TSvuJTKk2V6tQia7sqv8JG4qPdp6Cwt
+      # Password = 1234 --path /root/.simplechain/user3.json
     ports:
       - "8003:8000"
     networks:

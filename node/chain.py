@@ -74,9 +74,9 @@ class ChainStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
         self.blocks = {}          # hash -> Block
-        self.children = {}        # hash -> list of child hashes
+        self.children: dict[str, list[Block]] = {}        # hash -> list of child hashes
         self.tips = set()         # set of current tips
-        self.orphans = {}         # prev_hash -> list of blocks
+        self.orphans: dict[str, Block] = {}
         self.best_tip = None
 
         self.utxo = {}
@@ -126,27 +126,22 @@ class ChainStore:
     # =======================
 
     def add_block(self, block: Block) -> bool:
-        # duplikat
         if block.hash in self.blocks:
             return False
 
-        # orphan?
         if block.prev_hash not in self.blocks:
             self.orphans.setdefault(block.prev_hash, []).append(block)
             print(f"[ORPHAN] {block.hash[:8]} waiting for {block.prev_hash[:8]}")
             return False
 
-        # walidacja względem rodzica
         if not self._validate_block(block):
             print("[INVALID BLOCK]")
             return False
 
         self._add_block_internal(block)
 
-        # sprawdź czy ktoś na niego nie czekał
         self._process_orphans(block.hash)
 
-        # przelicz najlepszy łańcuch
         self._recalculate_best_chain()
         return True
 
@@ -154,12 +149,10 @@ class ChainStore:
         self.blocks[block.hash] = block
         self.children.setdefault(block.prev_hash, []).append(block.hash)
 
-        # aktualizacja tips
         if block.prev_hash in self.tips:
             self.tips.remove(block.prev_hash)
         self.tips.add(block.hash)
 
-        # pierwszy blok
         if self.best_tip is None:
             self.best_tip = block.hash
 
@@ -192,7 +185,6 @@ class ChainStore:
         if block.hash != expected:
             return False
 
-        # coinbase jako pierwsza
         if len(block.txs) == 0 or len(block.txs[0].inputs) != 0:
             return False
 
@@ -201,9 +193,7 @@ class ChainStore:
     def validate_block(self, block: Block) -> bool:
         return self._validate_block(block)
 
-    # =======================
     # ===== ORPHANS ========
-    # =======================
 
     def _process_orphans(self, parent_hash: str):
         if parent_hash not in self.orphans:
@@ -214,9 +204,7 @@ class ChainStore:
             print(f"[ORPHAN RESOLVED] {block.hash[:8]}")
             self.add_block(block)
 
-    # =======================
     # ===== CONSENSUS ======
-    # =======================
 
     def _recalculate_best_chain(self):
         if not self.tips:
@@ -237,9 +225,7 @@ class ChainStore:
             self.best_tip = best
             self._rebuild_utxo()
 
-    # =======================
     # ===== UTXO ===========
-    # =======================
 
     def _rebuild_utxo(self):
         print("[UTXO] rebuilding for best chain")
@@ -256,7 +242,7 @@ class ChainStore:
         while cur.prev_hash:
             chain.append(cur)
             cur = self.blocks[cur.prev_hash]
-        chain.append(cur)  # genesis
+        chain.append(cur)
         return list(reversed(chain))
 
     def balance_of(self, address: str) -> int:
@@ -275,9 +261,7 @@ class ChainStore:
         for idx, o in enumerate(tx.outputs):
             utxo[(tx.txid, idx)] = o
 
-    # =======================
     # ===== MINING =========
-    # =======================
 
     def make_next_block(self, txs: Optional[list] = None) -> Block:
         if txs is None:
@@ -300,7 +284,7 @@ class ChainStore:
             inputs=[],
             outputs=[TxOut(address=MINER_ADDRESS, amount=50)]
         )
-        coinbase.txid = compute_txid(coinbase)
+        coinbase.txid = hashlib.sha256(f"{height}{prev_hash}{miner}{timestamp}".encode()).hexdigest()
 
         txs = [coinbase] + txs
 
@@ -314,3 +298,97 @@ class ChainStore:
             nonce += 1
 
         return Block(height, prev_hash, timestamp, miner, txs, nonce, h)
+    
+    def add_block(self, block: Block):
+        if self.has_hash(block.hash):
+            return False
+
+        if block.prev_hash and not self.has_hash(block.prev_hash):
+            print(f"[ORPHAN] storing block {block.hash[:8]} (missing parent {block.prev_hash[:8]})")
+            self._add_orphan(block)
+            return False
+
+        if not self._validate_block(block):
+            print(f"[INVALID] block {block.hash[:8]}")
+            return False
+        
+        #self._rebuild_utxo()
+
+        self._insert_block(block)
+
+        self._try_attach_children(block.hash)
+
+        return True
+    
+    def _add_orphan(self, block: Block):
+        self.orphans[block.hash] = block
+        self.children.setdefault(block.prev_hash, []).append(block)
+
+    def _try_attach_children(self, parent_hash: str):
+        if parent_hash not in self.children:
+            return
+
+        for child in self.children[parent_hash]:
+            print(f"[ORPHAN] trying to attach {child.hash[:8]}")
+            self.orphans.pop(child.hash, None)
+            self.add_block(child)   # tu rekursja jest POPRAWNA
+
+        del self.children[parent_hash]
+
+    def _insert_block(self, block: Block):
+        self.blocks[block.hash] = block
+
+        # Zarejestruj jako dziecko parenta
+        self.children.setdefault(block.prev_hash, []).append(block.hash)
+
+        # Usuń parenta z tipów
+        if block.prev_hash in self.tips:
+            self.tips.remove(block.prev_hash)
+
+        # Dodaj nowy tip
+        self.tips.add(block.hash)
+
+        # Sprawdź czy to nowy najlepszy łańcuch
+        self._recalculate_best_chain()
+
+    def validate_tx(self, tx: Transaction) -> bool:
+        return self.validate_tx_against_utxo(tx, self.utxo)
+    
+    def validate_tx_against_utxo(self, tx, utxo: dict) -> bool:
+        if len(tx.inputs) == 0:
+            return True
+
+        total_in = 0
+        for i in tx.inputs:
+            key = (i.txid, i.index)
+            if key not in utxo:
+                return False
+
+            total_in += utxo[key].amount
+
+        total_out = sum(o.amount for o in tx.outputs)
+
+        if total_out > total_in:
+            return False
+
+        return True
+    
+    def get_block(self, height: int) -> Optional[Block]:
+        if self.best_tip is None:
+            return None
+
+        chain = []
+        cur = self.blocks[self.best_tip]
+
+        while cur:
+            chain.append(cur)
+            if not cur.prev_hash:
+                break
+            cur = self.blocks.get(cur.prev_hash)
+
+        chain.reverse()
+
+        if 0 <= height < len(chain):
+            return chain[height]
+
+        return None
