@@ -154,7 +154,5 @@ GET /balance?address=<address>
 - Handling blockchain forks and orphan blocks
 - Rebuilding UTXO state after chain reorganization
 - Designing modular separation between wallet and node
-
-Using Docker to simulate multi-node distributed systems
-
-Working with cryptographic primitives (Ed25519, AES-GCM, Scrypt)
+- Using Docker to simulate multi-node distributed systems
+- Working with cryptographic primitives (Ed25519, AES-GCM, Scrypt)
